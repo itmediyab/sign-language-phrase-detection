@@ -1,7 +1,7 @@
 Sign Language Phrase Detection
 - This project detects sign language phrases for a patient–doctor hospital appointment scenario using machine learning.
-- It aims to assist communication in hospital settings by detecting commonly used appointment phrases in real time.
-- It extracts hand keypoints in csv format using Mediapipe Holistic, trains a model and performs live webcam detection.
+- It aims to assist communication in a hospital settings by detecting commonly used phrases in real time.
+- It extracts hand keypoints in a csv format using Mediapipe Holistic, trains a model and performs live webcam detection.
 
 Dataset
 - 21 hospital related phrases were collected, with 20-30 videos per phrase.
