@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>MediaPipe Holistic – Hand </title>
+
+  <!-- MediaPipe Holistic -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js"></script>
+
+  <style>
+    body {
+      background: #121212;
+      color: #e0e0e0;
+      font-family: Arial, sans-serif;
+      text-align: center;
+      padding: 20px;
+    }
+    #canvasContainer {
+      display: inline-block;
+      max-width: 640px;
+      width: 100%;
+    }
+    canvas {
+      border: 2px solid #bb86fc;
+      border-radius: 8px;
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    #status {
+      margin: 15px auto;
+      padding: 10px;
+      background: #1e1e1e;
+      border-radius: 8px;
+      max-width: 800px;
+    }
+    video { display: none; }
+    .legend {
+      display: inline-block;
+      margin: 10px;
+      padding: 10px 20px;
+      background: #1e1e1e;
+      border-radius: 8px;
+      font-size: 0.9em;
+    }
+    .legend-item {
+      display: inline-block;
+      margin: 0 10px;
+    }
+    .legend-color {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      vertical-align: middle;
+      margin-right: 5px;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>MediaPipe Holistic – Hand Tracking with Full Arm Anchoring</h1>
+  <p>Stable sign-language landmark extraction using shoulder-elbow-wrist chain</p>
+
+  <div id="status">Loading...</div>
+
+  <div id="canvasContainer">
+    <canvas id="canvas"></canvas>
+  </div>
+  
+  <div class="legend">
+    <div class="legend-item">
+      <span class="legend-color" style="background: #00ff00;"></span>
+      <span>Left Hand</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-color" style="background: #ff00ff;"></span>
+      <span>Right Hand</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-color" style="background: #ffff00;"></span>
+      <span>Left Arm</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-color" style="background: #00ffff;"></span>
+      <span>Right Arm</span>
+    </div>
+  </div>
+
+  <video id="video" muted playsinline crossorigin="anonymous"></video>
+
+  <script>
+    /* ===========================
+       CONFIG
+    ============================ */
+
+    const VIDEO_FILES = [
+      "1.mp4", "2.mp4", "3.mp4", "4.mp4", "5.mp4",
+      "6.mp4", "7.mp4", "8.mp4", "9.mp4", "10.mp4",
+      "11.mp4", "12.mp4", "13.mp4", "14.mp4", "15.mp4",
+      "16.mp4", "18.mp4", "19.mp4", "20.mp4",
+      "21.mp4", "22.mp4", "23.mp4", "24.mp4", "25.mp4",
+      "26.mp4", "27.mp4", "28.mp4", "29.mp4"
+    ];
+
+    const PHRASE = "good morning doctor"; // The phrase being signed
+
+    const HAND_CONNECTIONS = [
+      [0,1],[1,2],[2,3],[3,4],
+      [0,5],[5,6],[6,7],[7,8],
+      [0,9],[9,10],[10,11],[11,12],
+      [0,13],[13,14],[14,15],[15,16],
+      [0,17],[17,18],[18,19],[19,20],
+      [5,9],[9,13],[13,17]
+    ];
+
+    const HAND_KEYPOINT_NAMES = [
+      "wrist","thumb_cmc","thumb_mcp","thumb_ip","thumb_tip",
+      "index_mcp","index_pip","index_dip","index_tip",
+      "middle_mcp","middle_pip","middle_dip","middle_tip",
+      "ring_mcp","ring_pip","ring_dip","ring_tip",
+      "pinky_mcp","pinky_pip","pinky_dip","pinky_tip"
+    ];
+
+    /* ===========================
+       STATE
+    ============================ */
+
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const statusEl = document.getElementById("status");
+
+    let holistic = null;
+    let currentVideo = 0;
+    let frameCount = 0;
+    let allData = [];
+    let isProcessing = false;
+
+    // Hand tracking for consistency
+    let handTracking = {
+      left: null,
+      right: null
+    };
+
+    /* ===========================
+       HAND TRACKING CONSISTENCY WITH FULL ARM ANCHORING
+    ============================ */
+
+    function distance(lm1, lm2) {
+      const dx = lm1.x - lm2.x;
+      const dy = lm1.y - lm2.y;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function getArmChain(poseLandmarks, side) {
+      // MediaPipe pose landmarks:
+      // Left: shoulder=11, elbow=13, wrist=15
+      // Right: shoulder=12, elbow=14, wrist=16
+      if (!poseLandmarks || poseLandmarks.length < 17) return null;
+      
+      if (side === 'left') {
+        return {
+          shoulder: poseLandmarks[11],
+          elbow: poseLandmarks[13],
+          wrist: poseLandmarks[15]
+        };
+      } else {
+        return {
+          shoulder: poseLandmarks[12],
+          elbow: poseLandmarks[14],
+          wrist: poseLandmarks[16]
+        };
+      }
+    }
+
+    function calculateArmScore(handWrist, armChain) {
+      if (!armChain) return 0;
+      
+      // Calculate distances to each part of the arm chain
+      const distToShoulder = distance(handWrist, armChain.shoulder);
+      const distToElbow = distance(handWrist, armChain.elbow);
+      const distToPoseWrist = distance(handWrist, armChain.wrist);
+      
+      // Wrist should be closest to pose wrist, then elbow, then shoulder
+      // Give highest weight to pose wrist proximity
+      const wristScore = 1 / (distToPoseWrist + 0.01);
+      const elbowScore = 0.5 / (distToElbow + 0.01);
+      const shoulderScore = 0.3 / (distToShoulder + 0.01);
+      
+      return wristScore + elbowScore + shoulderScore;
+    }
+
+    function assignConsistentHands(leftLandmarks, rightLandmarks, poseLandmarks) {
+      if (!leftLandmarks && !rightLandmarks) {
+        return { left: null, right: null };
+      }
+
+      const DISTANCE_THRESHOLD = 0.15;
+      const ARM_WEIGHT = 0.7; // Weight for full arm chain scoring
+      const TEMPORAL_WEIGHT = 0.3; // Weight for temporal tracking
+      
+      let assignedLeft = null;
+      let assignedRight = null;
+
+      // Get full arm chains
+      const leftArm = getArmChain(poseLandmarks, 'left');
+      const rightArm = getArmChain(poseLandmarks, 'right');
+
+      const candidates = [];
+      if (leftLandmarks) {
+        candidates.push({ landmarks: leftLandmarks, detected: 'left' });
+      }
+      if (rightLandmarks) {
+        candidates.push({ landmarks: rightLandmarks, detected: 'right' });
+      }
+
+      // If we only have one hand, use arm chain if available
+      if (candidates.length === 1) {
+        const wrist = candidates[0].landmarks[0];
+        
+        if (leftArm && rightArm) {
+          const leftScore = calculateArmScore(wrist, leftArm);
+          const rightScore = calculateArmScore(wrist, rightArm);
+          
+          if (leftScore > rightScore) {
+            assignedLeft = candidates[0].landmarks;
+            handTracking.left = wrist;
+          } else {
+            assignedRight = candidates[0].landmarks;
+            handTracking.right = wrist;
+          }
+        } else {
+          // Fall back to detected handedness
+          if (candidates[0].detected === 'left') {
+            assignedLeft = candidates[0].landmarks;
+            handTracking.left = wrist;
+          } else {
+            assignedRight = candidates[0].landmarks;
+            handTracking.right = wrist;
+          }
+        }
+        
+        return { left: assignedLeft, right: assignedRight };
+      }
+
+      // If we have two hands, use combination of arm chain and temporal tracking
+      if (candidates.length === 2) {
+        const wrist0 = candidates[0].landmarks[0];
+        const wrist1 = candidates[1].landmarks[0];
+        
+        let scores = [
+          { candidate: 0, leftScore: 0, rightScore: 0 },
+          { candidate: 1, leftScore: 0, rightScore: 0 }
+        ];
+
+        // Score based on full arm chain proximity
+        if (leftArm && rightArm) {
+          const arm0LeftScore = calculateArmScore(wrist0, leftArm);
+          const arm0RightScore = calculateArmScore(wrist0, rightArm);
+          const arm1LeftScore = calculateArmScore(wrist1, leftArm);
+          const arm1RightScore = calculateArmScore(wrist1, rightArm);
+          
+          scores[0].leftScore += ARM_WEIGHT * arm0LeftScore;
+          scores[0].rightScore += ARM_WEIGHT * arm0RightScore;
+          scores[1].leftScore += ARM_WEIGHT * arm1LeftScore;
+          scores[1].rightScore += ARM_WEIGHT * arm1RightScore;
+        }
+
+        // Score based on temporal consistency
+        if (handTracking.left || handTracking.right) {
+          const dist0ToLeft = handTracking.left ? distance(wrist0, handTracking.left) : Infinity;
+          const dist0ToRight = handTracking.right ? distance(wrist0, handTracking.right) : Infinity;
+          const dist1ToLeft = handTracking.left ? distance(wrist1, handTracking.left) : Infinity;
+          const dist1ToRight = handTracking.right ? distance(wrist1, handTracking.right) : Infinity;
+          
+          if (dist0ToLeft < DISTANCE_THRESHOLD) {
+            scores[0].leftScore += TEMPORAL_WEIGHT * (1 / (dist0ToLeft + 0.01));
+          }
+          if (dist0ToRight < DISTANCE_THRESHOLD) {
+            scores[0].rightScore += TEMPORAL_WEIGHT * (1 / (dist0ToRight + 0.01));
+          }
+          if (dist1ToLeft < DISTANCE_THRESHOLD) {
+            scores[1].leftScore += TEMPORAL_WEIGHT * (1 / (dist1ToLeft + 0.01));
+          }
+          if (dist1ToRight < DISTANCE_THRESHOLD) {
+            scores[1].rightScore += TEMPORAL_WEIGHT * (1 / (dist1ToRight + 0.01));
+          }
+        } else {
+          // No tracking history, use detected handedness as tiebreaker
+          if (candidates[0].detected === 'left') scores[0].leftScore += 0.1;
+          else scores[0].rightScore += 0.1;
+          if (candidates[1].detected === 'left') scores[1].leftScore += 0.1;
+          else scores[1].rightScore += 0.1;
+        }
+
+        // Assign based on highest scores
+        if (scores[0].leftScore > scores[0].rightScore) {
+          // Candidate 0 is left hand
+          assignedLeft = candidates[0].landmarks;
+          handTracking.left = wrist0;
+          assignedRight = candidates[1].landmarks;
+          handTracking.right = wrist1;
+        } else {
+          // Candidate 0 is right hand
+          assignedRight = candidates[0].landmarks;
+          handTracking.right = wrist0;
+          assignedLeft = candidates[1].landmarks;
+          handTracking.left = wrist1;
+        }
+      }
+
+      return { left: assignedLeft, right: assignedRight };
+    }
+
+    /* ===========================
+       NORMALIZATION
+    ============================ */
+
+    function normalizeLandmarks(landmarks) {
+      let minX = Infinity, maxX = -Infinity;
+      let minY = Infinity, maxY = -Infinity;
+
+      landmarks.forEach(lm => {
+        minX = Math.min(minX, lm.x);
+        maxX = Math.max(maxX, lm.x);
+        minY = Math.min(minY, lm.y);
+        maxY = Math.max(maxY, lm.y);
+      });
+
+      const scale = Math.max(maxX - minX, maxY - minY) || 1;
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+
+      return landmarks.map(lm => ({
+        x: (lm.x - cx) / scale,
+        y: (lm.y - cy) / scale,
+        z: lm.z / scale,
+      }));
+    }
+
+    /* ===========================
+       DRAWING
+    ============================ */
+
+    function drawHand(landmarks, color, label) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+
+      HAND_CONNECTIONS.forEach(([a,b]) => {
+        ctx.beginPath();
+        ctx.moveTo(landmarks[a].x * canvas.width, landmarks[a].y * canvas.height);
+        ctx.lineTo(landmarks[b].x * canvas.width, landmarks[b].y * canvas.height);
+        ctx.stroke();
+      });
+
+      ctx.fillStyle = color;
+      landmarks.forEach(lm => {
+        ctx.beginPath();
+        ctx.arc(lm.x * canvas.width, lm.y * canvas.height, 4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Draw label
+      const wrist = landmarks[0];
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 16px Arial";
+      ctx.strokeStyle = "#000000";
+      ctx.lineWidth = 3;
+      ctx.strokeText(label, wrist.x * canvas.width + 10, wrist.y * canvas.height - 10);
+      ctx.fillText(label, wrist.x * canvas.width + 10, wrist.y * canvas.height - 10);
+    }
+
+    function drawArmChains(poseLandmarks) {
+      if (!poseLandmarks || poseLandmarks.length < 17) return;
+      
+      const leftArm = getArmChain(poseLandmarks, 'left');
+      const rightArm = getArmChain(poseLandmarks, 'right');
+      
+      // Draw left arm chain (yellow)
+      if (leftArm) {
+        ctx.strokeStyle = "#ffff00";
+        ctx.lineWidth = 3;
+        ctx.setLineDash([]);
+        
+        // Shoulder to elbow
+        ctx.beginPath();
+        ctx.moveTo(leftArm.shoulder.x * canvas.width, leftArm.shoulder.y * canvas.height);
+        ctx.lineTo(leftArm.elbow.x * canvas.width, leftArm.elbow.y * canvas.height);
+        ctx.stroke();
+        
+        // Elbow to wrist
+        ctx.beginPath();
+        ctx.moveTo(leftArm.elbow.x * canvas.width, leftArm.elbow.y * canvas.height);
+        ctx.lineTo(leftArm.wrist.x * canvas.width, leftArm.wrist.y * canvas.height);
+        ctx.stroke();
+        
+        // Draw points
+        ctx.fillStyle = "#ffff00";
+        [leftArm.shoulder, leftArm.elbow, leftArm.wrist].forEach(point => {
+          ctx.beginPath();
+          ctx.arc(point.x * canvas.width, point.y * canvas.height, 6, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+      
+      // Draw right arm chain (cyan)
+      if (rightArm) {
+        ctx.strokeStyle = "#00ffff";
+        ctx.lineWidth = 3;
+        ctx.setLineDash([]);
+        
+        // Shoulder to elbow
+        ctx.beginPath();
+        ctx.moveTo(rightArm.shoulder.x * canvas.width, rightArm.shoulder.y * canvas.height);
+        ctx.lineTo(rightArm.elbow.x * canvas.width, rightArm.elbow.y * canvas.height);
+        ctx.stroke();
+        
+        // Elbow to wrist
+        ctx.beginPath();
+        ctx.moveTo(rightArm.elbow.x * canvas.width, rightArm.elbow.y * canvas.height);
+        ctx.lineTo(rightArm.wrist.x * canvas.width, rightArm.wrist.y * canvas.height);
+        ctx.stroke();
+        
+        // Draw points
+        ctx.fillStyle = "#00ffff";
+        [rightArm.shoulder, rightArm.elbow, rightArm.wrist].forEach(point => {
+          ctx.beginPath();
+          ctx.arc(point.x * canvas.width, point.y * canvas.height, 6, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+    }
+
+    /* ===========================
+       RESULTS HANDLER
+    ============================ */
+
+    function onResults(results) {
+      if (!isProcessing) return;
+      
+      frameCount++;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      // Draw arm chains first (underneath hands)
+      if (results.poseLandmarks) {
+        drawArmChains(results.poseLandmarks);
+      }
+
+      const time = video.currentTime.toFixed(3);
+      const videoName = VIDEO_FILES[currentVideo];
+      const continuation = 1; // Will be set to 0 for last frame in video processing
+
+      // Assign consistent handedness using full arm chains
+      const hands = assignConsistentHands(
+        results.leftHandLandmarks,
+        results.rightHandLandmarks,
+        results.poseLandmarks
+      );
+
+      if (hands.left) {
+        drawHand(hands.left, "#00ff00", "Left");
+        const norm = normalizeLandmarks(hands.left);
+        norm.forEach((lm, i) => {
+          allData.push({
+            phrase: PHRASE,
+            video: videoName,
+            videoIndex: currentVideo + 1,
+            frame: frameCount,
+            time,
+            continuation: continuation,
+            hand: "Left",
+            keypoint: i,
+            keypointName: HAND_KEYPOINT_NAMES[i],
+            x: lm.x.toFixed(6),
+            y: lm.y.toFixed(6),
+            z: lm.z.toFixed(6),
+          });
+        });
+      }
+
+      if (hands.right) {
+        drawHand(hands.right, "#ff00ff", "Right");
+        const norm = normalizeLandmarks(hands.right);
+        norm.forEach((lm, i) => {
+          allData.push({
+            phrase: PHRASE,
+            video: videoName,
+            videoIndex: currentVideo + 1,
+            frame: frameCount,
+            time,
+            continuation: continuation,
+            hand: "Right",
+            keypoint: i,
+            keypointName: HAND_KEYPOINT_NAMES[i],
+            x: lm.x.toFixed(6),
+            y: lm.y.toFixed(6),
+            z: lm.z.toFixed(6),
+          });
+        });
+      }
+
+      // Draw overlay
+      ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+      ctx.fillRect(0, 0, canvas.width, 120);
+      
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "14px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText(`Phrase: ${PHRASE}`, 10, 25);
+      ctx.fillText(`Video: ${currentVideo + 1}/${VIDEO_FILES.length} - ${videoName}`, 10, 50);
+      ctx.fillText(`Frame: ${frameCount}`, 10, 75);
+      ctx.fillText(`Total keypoints: ${allData.length}`, 10, 100);
+
+      statusEl.innerHTML =
+        `Processing <strong>${currentVideo + 1}/${VIDEO_FILES.length}</strong>: ${videoName}<br>
+         Phrase: <strong>${PHRASE}</strong><br>
+         Frame: ${frameCount} | Total keypoints: ${allData.length}`;
+    }
+
+    /* ===========================
+       INIT HOLISTIC (LAZY LOAD)
+    ============================ */
+    
+    async function initHolistic() {
+      if (holistic) return holistic;
+      
+      statusEl.innerHTML = "Initializing MediaPipe Holistic...";
+      
+      holistic = new Holistic({
+        locateFile: (file) =>
+          `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`,
+      });
+
+      holistic.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        refineFaceLandmarks: false,
+        enableSegmentation: false,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+
+      holistic.onResults(onResults);
+      
+      // Wait for initialization
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      statusEl.innerHTML = "MediaPipe Holistic ready!";
+      
+      return holistic;
+    }
+
+    /* ===========================
+       VIDEO LOOP
+    ============================ */
+
+    async function processVideo() {
+      if (currentVideo >= VIDEO_FILES.length) {
+        statusEl.innerHTML = `<strong>Done!</strong><br>${VIDEO_FILES.length} videos processed<br>${allData.length} keypoints collected<br>Downloading CSV...`;
+        downloadCSV();
+        return;
+      }
+
+      const videoFile = VIDEO_FILES[currentVideo];
+      
+      statusEl.innerHTML = `Loading video ${currentVideo + 1}/${VIDEO_FILES.length}: ${videoFile}...`;
+      
+      // Stop any previous processing
+      isProcessing = false;
+      video.pause();
+      
+      // Reset state
+      frameCount = 0;
+      handTracking = { left: null, right: null };
+
+      // Initialize holistic FIRST (especially important for first video)
+      await initHolistic();
+      
+      // Give extra time for first video to ensure holistic is fully ready
+      if (currentVideo === 0) {
+        statusEl.innerHTML = `Preparing MediaPipe for first video...`;
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+
+      // Load video
+      await new Promise((resolve, reject) => {
+        video.onloadedmetadata = () => {
+          console.log(`Metadata loaded: ${videoFile} (${video.videoWidth}x${video.videoHeight}, ${video.duration}s)`);
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+        };
+        
+        video.oncanplaythrough = () => {
+          console.log(`Video fully loaded: ${videoFile}`);
+          resolve();
+        };
+        
+        video.onerror = (e) => {
+          console.error(`Error loading ${videoFile}:`, e);
+          reject(e);
+        };
+        
+        video.src = videoFile;
+        video.load();
+      }).catch(err => {
+        statusEl.innerHTML = `<strong style="color: #ff6b6b;">Error loading ${videoFile}</strong><br>Skipping...`;
+        currentVideo++;
+        setTimeout(processVideo, 2000);
+        return;
+      });
+      
+      // Reset to beginning
+      video.currentTime = 0;
+      
+      await new Promise(resolve => {
+        video.onseeked = () => {
+          console.log(`Seeked to start: ${video.currentTime}s`);
+          resolve();
+        };
+      });
+      
+      statusEl.innerHTML = `Processing <strong>${currentVideo + 1}/${VIDEO_FILES.length}</strong>: ${videoFile}<br>Warming up first frame...`;
+      
+      // CRITICAL: Process the first frame BEFORE starting playback
+      // This ensures MediaPipe is ready and captures from the very beginning
+      isProcessing = true;
+      
+      // Send the first frame to MediaPipe while paused
+      await holistic.send({ image: video });
+      console.log(`First frame sent to MediaPipe at ${video.currentTime}s`);
+      
+      // Wait for MediaPipe to process it
+      await new Promise(resolve => setTimeout(resolve, 200));
+      
+      statusEl.innerHTML = `Processing <strong>${currentVideo + 1}/${VIDEO_FILES.length}</strong>: ${videoFile}<br>Starting from 0.0s...`;
+      
+      video.onended = () => {
+        console.log(`${videoFile} finished → ${frameCount} frames`);
+        isProcessing = false;
+        
+        // Mark last frame
+        allData.forEach(row => {
+          if (row.video === videoFile && row.frame === frameCount) {
+            row.continuation = 0;
+          }
+        });
+        
+        currentVideo++;
+        setTimeout(processVideo, 500);
+      };
+      
+      // Now start the video
+      await video.play();
+      console.log(`Playing ${videoFile} from ${video.currentTime}s`);
+      
+      // Start processing frames
+      requestAnimationFrame(processFrame);
+    }
+
+    async function processFrame() {
+      if (!isProcessing || video.paused || video.ended) return;
+      await holistic.send({ image: video });
+      requestAnimationFrame(processFrame);
+    }
+
+    /* ===========================
+       CSV EXPORT - WIDE FORMAT
+    ============================ */
+
+    function downloadCSV() {
+      if (allData.length === 0) {
+        alert("No hands detected in any video!");
+        return;
+      }
+
+      // Group data by frame
+      const frameData = {};
+      
+      allData.forEach(r => {
+        const key = `${r.video}_${r.frame}`;
+        if (!frameData[key]) {
+          frameData[key] = {
+            phrase: r.phrase,
+            video: r.video,
+            videoIndex: r.videoIndex,
+            frame: r.frame,
+            time: r.time,
+            continuation: r.continuation,
+            left: {},
+            right: {}
+          };
+        }
+        
+        const hand = r.hand.toLowerCase();
+        frameData[key][hand][r.keypointName] = {
+          x: r.x,
+          y: r.y,
+          z: r.z
+        };
+      });
+
+      // Build CSV header
+      let header = "phrase,video,videoIndex,frame,time,continuation";
+      
+      // Add left hand columns
+      HAND_KEYPOINT_NAMES.forEach(name => {
+        header += `,left_${name}_x,left_${name}_y,left_${name}_z`;
+      });
+      
+      // Add right hand columns
+      HAND_KEYPOINT_NAMES.forEach(name => {
+        header += `,right_${name}_x,right_${name}_y,right_${name}_z`;
+      });
+      
+      let csv = header + "\n";
+
+      // Build CSV rows
+      Object.values(frameData).forEach(frame => {
+        let row = `${frame.phrase},${frame.video},${frame.videoIndex},${frame.frame},${frame.time},${frame.continuation}`;
+        
+        // Add left hand data
+        HAND_KEYPOINT_NAMES.forEach(name => {
+          const lm = frame.left[name];
+          if (lm) {
+            row += `,${lm.x},${lm.y},${lm.z}`;
+          } else {
+            row += `,0,0,0`; // Zeros if hand not detected
+          }
+        });
+        
+        // Add right hand data
+        HAND_KEYPOINT_NAMES.forEach(name => {
+          const lm = frame.right[name];
+          if (lm) {
+            row += `,${lm.x},${lm.y},${lm.z}`;
+          } else {
+            row += `,0,0,0`; // Zeros if hand not detected
+          }
+        });
+        
+        csv += row + "\n";
+      });
+
+      const blob = new Blob([csv], { type: "text/csv" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `holistic_hand_landmarks_wide_${Date.now()}.csv`;
+      a.click();
+
+      console.log(`CSV downloaded: ${Object.keys(frameData).length} frames from ${VIDEO_FILES.length} videos`);
+    }
+
+    /* ===========================
+       START
+    ============================ */
+
+    processVideo();
+  </script>
+</body>
+</html>
