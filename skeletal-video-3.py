@@ -88,37 +88,57 @@ def convert_to_skeleton(input_path, output_path):
                     end_point = (int(end.x * w), int(end.y * h))
                     cv2.line(skeleton, start_point, end_point, face_color, 2)
                 
-                # -------- LEFT EYE (DETAILED) --------
+                # Left Eye
                 left_eye_points = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
                 left_eye_coords = np.array([(int(face_lm[i].x * w), int(face_lm[i].y * h)) for i in left_eye_points], np.int32)
                 cv2.polylines(skeleton, [left_eye_coords], True, face_color, 2)
                 
-                # -------- RIGHT EYE (DETAILED) --------
+                # Right Eye
                 right_eye_points = [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466]
                 right_eye_coords = np.array([(int(face_lm[i].x * w), int(face_lm[i].y * h)) for i in right_eye_points], np.int32)
                 cv2.polylines(skeleton, [right_eye_coords], True, face_color, 2)
                 
-                # -------- LIPS (OUTER) --------
+                # Lips (Outer)
                 outer_lip_points = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 
                                    375, 321, 405, 314, 17, 84, 181, 91, 146]
                 outer_lip_coords = np.array([(int(face_lm[i].x * w), int(face_lm[i].y * h)) for i in outer_lip_points], np.int32)
                 cv2.polylines(skeleton, [outer_lip_coords], True, face_color, 2)
                 
-                # -------- LIPS (INNER) --------
+                # Lips (Inner)
                 inner_lip_points = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 
                                    324, 318, 402, 317, 14, 87, 178, 88, 95]
                 inner_lip_coords = np.array([(int(face_lm[i].x * w), int(face_lm[i].y * h)) for i in inner_lip_points], np.int32)
                 cv2.polylines(skeleton, [inner_lip_coords], True, face_color, 2)
             
-            # ================= DRAW POSE (RED) =================
+            # ================= DRAW POSE WITHOUT WRISTS (RED) =================
             if results.pose_landmarks:
-                mp_drawing.draw_landmarks(
-                    skeleton,
-                    results.pose_landmarks,
-                    mp_holistic.POSE_CONNECTIONS,
-                    landmark_drawing_spec=pose_landmark_spec,
-                    connection_drawing_spec=pose_connection_spec
-                )
+                h, w = height, width
+                pose_lm = results.pose_landmarks.landmark
+                
+                # Define pose connections WITHOUT wrist connections
+                # Original pose has connections to wrists (15, 16), we'll exclude those
+                pose_connections_no_wrists = [
+                    (11, 12), (11, 13), (13, 15), (12, 14), (14, 16),  # Arms
+                    (11, 23), (12, 24), (23, 24),  # Torso
+                    (23, 25), (25, 27), (27, 29), (29, 31),  # Left leg
+                    (24, 26), (26, 28), (28, 30), (30, 32),  # Right leg
+                ]
+                
+                # Draw custom pose connections
+                for connection in pose_connections_no_wrists:
+                    start_idx, end_idx = connection
+                    start = pose_lm[start_idx]
+                    end = pose_lm[end_idx]
+                    start_point = (int(start.x * w), int(start.y * h))
+                    end_point = (int(end.x * w), int(end.y * h))
+                    cv2.line(skeleton, start_point, end_point, (0, 0, 255), 2)
+                
+                # Draw pose landmarks (excluding wrists 15, 16)
+                pose_landmarks_to_draw = [11, 12, 13, 14, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+                for idx in pose_landmarks_to_draw:
+                    landmark = pose_lm[idx]
+                    point = (int(landmark.x * w), int(landmark.y * h))
+                    cv2.circle(skeleton, point, 3, (0, 0, 255), -1)
             
             # ================= DRAW LEFT HAND (GREEN) =================
             if results.left_hand_landmarks:
@@ -154,14 +174,14 @@ def convert_to_skeleton(input_path, output_path):
 
 # ================= PROCESS ALL VIDEOS =================
 print("=" * 70)
-print("BATCH CONVERTING VIDEOS TO SKELETON (DETAILED FACE)")
+print("BATCH CONVERTING VIDEOS TO SKELETON (NO WRIST CLASH)")
 print("=" * 70)
 print(f"Input folder:  {INPUT_FOLDER}")
 print(f"Output folder: {OUTPUT_FOLDER}")
 print("=" * 70)
 print("\nColor Scheme:")
-print("  ⚪ Face: Light Gray (outline + detailed eyes + lips)")
-print("  🔴 Body/Pose: Red")
+print("  ⚪ Face: Light Gray (outline + eyes + lips)")
+print("  🔴 Body/Pose: Red (no wrist overlap)")
 print("  🟢 Left Hand: Green")
 print("  🟡 Right Hand: Yellow")
 print("=" * 70)
